@@ -64,55 +64,14 @@ public sealed class Mediator
 
             var candidate = candidates.Single();
             var candidateIndex = _handlers.IndexOf(candidate);
-            _handlers[candidateIndex] = value ?? throw new ArgumentNullException(nameof(value), "New handler cannot be null.");
-        }
-    }
-
-    private HandlerRegistration? this[HandlerArity arity, Type returnType, params Type[] argTypes]
-    {
-        get
-        {
-            var rCount = argTypes.Length;
-            var requestedArgTypes = argTypes;
-            var requestedReturn = returnType;
-
-            var candidates = _handlers
-                .Where(r => r.Arity == arity)
-                .Where(r => r.ArgTypes.SequenceEqual(requestedArgTypes))
-                .Where(r => r.Handler.Method.ReturnType == requestedReturn);
-
-            return candidates.SingleOrDefault();
-        }
-        set
-        {
-            var rCount = argTypes.Length;
-            var requestedArgTypes = argTypes;
-            var requestedReturn = returnType;
-
-            var candidates = _handlers
-                .Where(r => r.Arity == arity)
-                .Where(r => r.ArgTypes.SequenceEqual(requestedArgTypes))
-                .Where(r => r.Handler.Method.ReturnType == requestedReturn);
-
-            var candidate = candidates.Single();
-            var canidateIndex = _handlers.IndexOf(candidate);
-            _handlers[canidateIndex] = value ?? throw new ArgumentNullException(nameof(value), "New handler cannot be null.");
+            _handlers[candidateIndex] = value
+                ?? throw new ArgumentNullException(nameof(value), "New handler cannot be null.");
         }
     }
 
     private bool ExistsHandler(HandlerArity arity, params Type[] argTypes)
     {
         return this[arity, argTypes] != null;
-    }
-
-    private bool ExistsHandler<TReturn>(HandlerArity arity, params Type[] argTypes)
-    {
-        return this[arity, typeof(TReturn), argTypes] != null;
-    }
-
-    private bool ExistsHandler(HandlerArity arity, Type returnType, params Type[] argTypes)
-    {
-        return this[arity, returnType, argTypes] != null;
     }
 
     private bool TryGetHandler<THandler>(HandlerArity arity, out THandler? handler) where THandler : Delegate
@@ -132,41 +91,6 @@ public sealed class Mediator
             .SingleOrDefault() as THandler;
 
         return handler != null;
-    }
-
-    private bool TrySetHandler<TCurrent>(HandlerArity currentArity, Delegate newHandler, HandlerArity? newArity = null, params Type[] newArgTypes)
-    {
-        var tCount = typeof(TCurrent).GetGenericArguments().Length;
-        var targetFunc = typeof(TCurrent).Name.StartsWith("Func");
-        var targetArgTypes = typeof(TCurrent).GetGenericArguments().SkipLast(targetFunc ? 1 : 0);
-        var targetReturn = typeof(TCurrent).GetGenericArguments().Skip(targetFunc ? tCount - 1 : tCount).SingleOrDefault();
-
-        var targetRegistration = _handlers
-            .Where(r => r.Arity == currentArity)
-            .Where(r => r.ArgTypes.SequenceEqual(targetArgTypes))
-            .Where(r => (!targetFunc && r.Handler.Method.ReturnType == typeof(void)) ||
-                        (targetFunc && r.Handler.Method.ReturnType == targetReturn))
-            .SingleOrDefault();
-
-        if (targetRegistration != null)
-        {
-            try
-            {
-                newArity ??= currentArity;
-                if (newArgTypes.Length == 0)
-                {
-                    newArgTypes = newHandler.GetArgTypes();
-                }
-                var targetRegistrationIndex = _handlers.IndexOf(targetRegistration);
-                _handlers[targetRegistrationIndex] = new HandlerRegistration((HandlerArity)newArity, newArgTypes, newHandler);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-        return false;
     }
 
     /// <summary>
