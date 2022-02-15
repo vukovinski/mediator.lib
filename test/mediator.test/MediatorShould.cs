@@ -1,4 +1,5 @@
-using Xunit;
+﻿using Xunit;
+using System;
 using mediator.lib;
 using System.Threading.Tasks;
 
@@ -10,19 +11,19 @@ public class MediatorShould : TestState<int>
     {
         get
         {
-            return new Mediator(new[] {
+            return new Mediator(new Delegate[] {
                 // actions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; }),
+                (int a) => { AddCallerName(); Value = a; },
+                (int a, int b) => { AddCallerName(); Value = b; },
+                (int a, int b, int c) => { AddCallerName(); Value = c; },
                 // functions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; return Value; }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; return Value; }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; return Value; }),
+                (int a) => { AddCallerName(); Value = a; return Value; },
+                (int a, int b) => { AddCallerName(); Value = b; return Value; },
+                (int a, int b, int c) => { AddCallerName(); Value = c; return Value; },
                 // async functions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; return Task.FromResult(Value); }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; return Task.FromResult(Value); }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; return Task.FromResult(Value); })
+                (int a) => { AddCallerName(); Value = a; return Task.FromResult(Value); },
+                (int a, int b) => { AddCallerName(); Value = b; return Task.FromResult(Value); },
+                (int a, int b, int c) => { AddCallerName(); Value = c; return Task.FromResult(Value); }
             });
         }
     }
@@ -31,19 +32,19 @@ public class MediatorShould : TestState<int>
     {
         get
         {
-            return new MediatorThreadSafe(new[] {
+            return new MediatorThreadSafe(new Delegate[] {
                 // actions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; }),
+                (int a) => { AddCallerName(); Value = a; },
+                (int a, int b) => { AddCallerName(); Value = b; },
+                (int a, int b, int c) => { AddCallerName(); Value = c; },
                 // functions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; return Value; }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; return Value; }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; return Value; }),
+                (int a) => { AddCallerName(); Value = a; return Value; },
+                (int a, int b) => { AddCallerName(); Value = b; return Value; },
+                (int a, int b, int c) => { AddCallerName(); Value = c; return Value; },
                 // async functions
-                new HandlerRegistration(HandlerArity.Of1, new[] { typeof(int) }, (int a) => { AddCallerName(); Value = a; return Task.FromResult(Value); }),
-                new HandlerRegistration(HandlerArity.Of2, new[] { typeof(int), typeof(int) }, (int a, int b) => { AddCallerName(); Value = b; return Task.FromResult(Value); }),
-                new HandlerRegistration(HandlerArity.Of3, new[] { typeof(int), typeof(int), typeof(int) }, (int a, int b, int c) => { AddCallerName(); Value = c; return Task.FromResult(Value); })
+                (int a) => { AddCallerName(); Value = a; return Task.FromResult(Value); },
+                (int a, int b) => { AddCallerName(); Value = b; return Task.FromResult(Value); },
+                (int a, int b, int c) => { AddCallerName(); Value = c; return Task.FromResult(Value); }
             });
         }
     }

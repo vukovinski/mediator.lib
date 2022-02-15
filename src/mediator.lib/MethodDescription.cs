@@ -1,6 +1,6 @@
 ﻿using ImTools;
 
-namespace mediator.lib2;
+namespace mediator.lib;
 
 internal class MethodDescription : IEquatable<MethodDescription>
 {
@@ -13,6 +13,71 @@ internal class MethodDescription : IEquatable<MethodDescription>
     {
         ReturnType = d.Method.ReturnType ?? typeof(void);
         ParameterTypes = d.Method.GetParameters().Select(p => p.ParameterType).ToArray();
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1 } };
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1, Type paramType2)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1, paramType2 } };
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1, Type paramType2, Type paramType3)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1, paramType2, paramType3 } };
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4 } };
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4, paramType5 } };
+    }
+
+    public static MethodDescription ActOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type paramType6)
+    {
+        return new MethodDescription() { ReturnType = typeof(void), ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4, paramType5, paramType6 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = Array.Empty<Type>() };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type paramType2, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1, paramType2 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type paramType2, Type paramType3, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1, paramType2, paramType3 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4, paramType5 } };
+    }
+
+    public static MethodDescription FuncOfParams(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type paramType6, Type returnType)
+    {
+        return new MethodDescription() { ReturnType = returnType, ParameterTypes = new Type[] { paramType1, paramType2, paramType3, paramType4, paramType5, paramType6 } };
     }
 
     public static MethodDescription ActOfSig<A>()

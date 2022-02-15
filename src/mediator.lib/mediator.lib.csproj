@@ -6,12 +6,16 @@
     <TargetFramework>net6.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="..\..\.editorconfig" Link=".editorconfig" />
 	<None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\include\ImTools\src\ImTools\ImTools.csproj" />
   </ItemGroup>
 
 </Project>

@@ -21,7 +21,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\mediator.lib2\mediator.lib2.csproj" />
     <ProjectReference Include="..\..\src\mediator.lib\mediator.lib.csproj" />
   </ItemGroup>
 

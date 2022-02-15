@@ -1,4 +1,4 @@
-﻿namespace mediator.lib2;
+﻿namespace mediator.lib;
 
 internal static class RegistrationHasher
 {

@@ -30,3 +30,4 @@ record PostDataResponse(int statusCode);
 
 - v1.0.0 - initial Mediator
 - v1.1.0 - added MediatorThreadSafe and removed locking mechanism from original Mediator
+- v1.2.0 - changed the internal collection to a HashMap

@@ -1,550 +1,37 @@
-﻿using System.Reflection;
-using System.Runtime.CompilerServices;
+﻿using System;
+using System.Linq;
+using System.Reflection;
 
-[assembly: InternalsVisibleTo("mediator.test")]
+using ImTools;
 
 namespace mediator.lib;
 
-
-// use case: have an API controller call some unknown! method with POSTed data, and get the results back, with more indirection than usual
-
-// example call site:
-
-//class ExampleController
-//{
-//    private readonly Mediator _mediator;
-
-//    public ExampleController(Mediator mediator) => _mediator = mediator;
-
-//    public string? PostData(PostDataMessage data)
-//    {
-//        if (data != null)
-//        {
-//            var result = _mediator.Handle<PostDataMessage,PostDataResponse>(data); // call indirection;
-//            return new string(result.ToString());
-//        }
-//        return null;
-//    }
-//}
-
-//record PostDataMessage(object data);
-//record PostDataResponse(int statusCode);
-
-/// <summary>
-/// A thread safe communication primitive. Holds a manifest of registered handler methods, which can
-/// be called using one of the handle methods. Depending on the shape of the input, a handler will be chosen.
-/// </summary>
-public sealed class MediatorThreadSafe
+public class MediatorThreadSafe
 {
-    private readonly object _lock = new();
-    private HandlerRegistration? this[HandlerArity arity, params Type[] argTypes]
-    {
-        get
-        {
-            try
-            {
-                Monitor.Enter(_lock);
-                var rCount = argTypes.Length;
-                var requestedArgTypes = argTypes;
-                var requestedReturn = typeof(void);
-
-                var candidates = _handlers
-                    .Where(r => r.Arity == arity)
-                    .Where(r => r.ArgTypes.SequenceEqual(requestedArgTypes))
-                    .Where(r => r.Handler.Method.ReturnType == requestedReturn);
-
-                return candidates.SingleOrDefault();
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-        set
-        {
-            try
-            {
-                Monitor.Enter(_lock);
-                var rCount = argTypes.Length;
-                var requestedArgTypes = argTypes;
-                var requestedReturn = typeof(void);
-
-                var candidates = _handlers
-                    .Where(r => r.Arity == arity)
-                    .Where(r => r.ArgTypes.SequenceEqual(requestedArgTypes))
-                    .Where(r => r.Handler.Method.ReturnType == requestedReturn);
-
-                var candidate = candidates.Single();
-                var candidateIndex = _handlers.IndexOf(candidate);
-                _handlers[candidateIndex] = value
-                    ?? throw new ArgumentNullException(nameof(value), "New handler cannot be null.");
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-    }
-
-    private bool ExistsHandler(HandlerArity arity, params Type[] argTypes)
-    {
-        return this[arity, argTypes] != null;
-    }
-
-    private bool TryGetHandler<THandler>(HandlerArity arity, out THandler? handler) where THandler : Delegate
-    {
-        handler = null;
-        try
-        {
-            Monitor.Enter(_lock);
-            var rCount = typeof(THandler).GetGenericArguments().Length;
-            var requestedFunc = typeof(THandler).Name.StartsWith("Func");
-            var requestedArgTypes = typeof(THandler).GetGenericArguments().SkipLast(requestedFunc ? 1 : 0);
-            var requestedReturn = typeof(THandler).GetGenericArguments().Skip(requestedFunc ? rCount - 1 : rCount).SingleOrDefault();
-
-            handler = _handlers
-                .Where(r => r.Arity == arity)
-                .Where(r => r.ArgTypes.SequenceEqual(requestedArgTypes))
-                .Where(r => (!requestedFunc && r.Handler.Method.ReturnType == typeof(void)) ||
-                            (requestedFunc && r.Handler.Method.ReturnType == requestedReturn))
-                .Select(r => r.Handler)
-                .SingleOrDefault() as THandler;
-
-            return handler != null;
-        }
-        finally
-        {
-            if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-        }
-    }
+    private object _lock = new();
+    public MediatorThreadSafe() { }
+    public MediatorThreadSafe(IEnumerable<Delegate> delegates) => delegates.ToList().ForEach(d => RegisterHandler(d));
+    public MediatorThreadSafe(MediatorThreadSafe previous) : this(previous._handlers.Enumerate().Select(e => e.Value)) { }
 
     /// <summary>
-    /// The static instance of the mediator for use in simple apps.
+    /// The singleton instance of the mediator for use in simple apps.
     /// </summary>
     public static MediatorThreadSafe Singleton => _instance.Value;
-    private readonly List<HandlerRegistration> _handlers = new();
     private static readonly Lazy<MediatorThreadSafe> _instance = new(() => new MediatorThreadSafe());
+    private ImHashMap<MethodDescription, Delegate> _handlers = ImHashMap<MethodDescription, Delegate>.Empty;
 
     /// <summary>
-    /// A thread safe communication primitive. Holds a manifest of registered handler methods, which can
-    /// be called using one of the handle methods. Depending on the shape of the input, a handler will be chosen.
+    /// Register a method to the handler manifest.
     /// </summary>
-    public MediatorThreadSafe() { }
-
-    /// <summary>
-    /// A thread safe communication primitive. Holds a manifest of registered handler methods, which can
-    /// be called using one of the handle methods. Depending on the shape of the input, a handler will be chosen.
-    /// </summary>
-    public MediatorThreadSafe(MediatorThreadSafe previous) : this(previous._handlers) { }
-
-    /// <summary>
-    /// A thread safe communication primitive. Holds a manifest of registered handler methods, which can
-    /// be called using one of the handle methods. Depending on the shape of the input, a handler will be chosen.
-    /// </summary>
-    public MediatorThreadSafe(IEnumerable<HandlerRegistration> registrations) => _handlers = new List<HandlerRegistration>(registrations);
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public TResult Handle<TInput, TResult>(TInput input)
+    /// <param name="d">The method to register.</param>
+    public void RegisterHandler(Delegate d)
     {
-        if (TryGetHandler(HandlerArity.Of1, out Func<TInput, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return handler(input);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task<TResult> StartHandler<TInput, TResult>(TInput input)
-    {
-        if (TryGetHandler(HandlerArity.Of1, out Func<TInput, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <param name="input"></param>
-    /// <exception cref="NullReferenceException"></exception>
-    public void Handle<TInput>(TInput input)
-    {
-        if (TryGetHandler(HandlerArity.Of1, out Action<TInput>? handler) && handler != null)
-        {
-            try
-            {
-                handler(input);
-                return;
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <param name="input"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task StartHandler<TInput>(TInput input)
-    {
-        if (TryGetHandler(HandlerArity.Of1, out Action<TInput>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public async Task<TResult> HandleAsync<TInput, TResult>(TInput input)
-    {
-        if (TryGetHandler(HandlerArity.Of1, out Func<TInput, Task<TResult>>? handler) && handler != null)
-        {
-            try
-            {
-                return await handler(input);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public TResult Handle<TInput, TInput2, TResult>(TInput input, TInput2 input2)
-    {
-        if (TryGetHandler(HandlerArity.Of2, out Func<TInput, TInput2, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return handler(input, input2);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <exception cref="NullReferenceException"></exception>
-    public void Handle<TInput, TInput2>(TInput input, TInput2 input2)
-    {
-        if (TryGetHandler(HandlerArity.Of2, out Action<TInput, TInput2>? handler) && handler != null)
-        {
-            try
-            {
-                handler(input, input2);
-                return;
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task<TResult> StartHandler<TInput, TInput2, TResult>(TInput input, TInput2 input2)
-    {
-        if (TryGetHandler(HandlerArity.Of2, out Func<TInput, TInput2, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input, input2));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task StartHandler<TInput, TInput2>(TInput input, TInput2 input2)
-    {
-        if (TryGetHandler(HandlerArity.Of2, out Action<TInput, TInput2>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input, input2));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public async Task<TResult> HandleAsync<TInput, TInput2, TResult>(TInput input, TInput2 input2)
-    {
-        if (TryGetHandler(HandlerArity.Of2, out Func<TInput, TInput2, Task<TResult>>? handler) && handler != null)
-        {
-            try
-            {
-                return await handler(input, input2);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TInput3"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <param name="input3"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public TResult Handle<TInput, TInput2, TInput3, TResult>(TInput input, TInput2 input2, TInput3 input3)
-    {
-        if (TryGetHandler(HandlerArity.Of3, out Func<TInput, TInput2, TInput3, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return handler(input, input2, input3);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TInput3"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <param name="input3"></param>
-    /// <exception cref="NullReferenceException"></exception>
-    public void Handle<TInput, TInput2, TInput3>(TInput input, TInput2 input2, TInput3 input3)
-    {
-        if (TryGetHandler(HandlerArity.Of3, out Action<TInput, TInput2, TInput3>? handler) && handler != null)
-        {
-            try
-            {
-                handler(input, input2, input3);
-                return;
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TInput3"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <param name="input3"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task<TResult> StartHandler<TInput, TInput2, TInput3, TResult>(TInput input, TInput2 input2, TInput3 input3)
-    {
-        if (TryGetHandler(HandlerArity.Of3, out Func<TInput, TInput2, TInput3, TResult>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input, input2, input3));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and start a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TInput3"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <param name="input3"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public Task StartHandler<TInput, TInput2, TInput3>(TInput input, TInput2 input2, TInput3 input3)
-    {
-        if (TryGetHandler(HandlerArity.Of3, out Action<TInput, TInput2, TInput3>? handler) && handler != null)
-        {
-            try
-            {
-                return Task.Run(() => handler(input, input2, input3));
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Find and invoke a matching handler registered with the mediator.
-    /// </summary>
-    /// <typeparam name="TInput"></typeparam>
-    /// <typeparam name="TInput2"></typeparam>
-    /// <typeparam name="TInput3"></typeparam>
-    /// <typeparam name="TResult"></typeparam>
-    /// <param name="input"></param>
-    /// <param name="input2"></param>
-    /// <param name="input3"></param>
-    /// <returns></returns>
-    /// <exception cref="NullReferenceException"></exception>
-    public async Task<TResult> HandleAsync<TInput, TInput2, TInput3, TResult>(TInput input, TInput2 input2, TInput3 input3)
-    {
-        if (TryGetHandler(HandlerArity.Of3, out Func<TInput, TInput2, TInput3, Task<TResult>>? handler) && handler != null)
-        {
-            try
-            {
-                return await handler(input, input2, input3);
-            }
-            catch
-            {
-                throw;
-            }
-        }
-        throw new NullReferenceException("No handler found for given input!");
-    }
-
-    /// <summary>
-    /// Register a new handler by infering the supported message types from the passed method parameters.
-    /// Delegates with up to 3 arguments are supported.
-    /// </summary>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="NotSupportedException"></exception>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void RegisterHandler(Delegate messageHandler)
-    {
-        var argTypes = messageHandler.GetArgTypes();
-        var arity = (HandlerArity)argTypes.Length;
-        if (ExistsHandler(arity, argTypes))
-            throw new InvalidOperationException("Handler for specified message type(s) already registered.");
-
         try
         {
             Monitor.Enter(_lock);
-            _handlers.Add(new HandlerRegistration(arity, argTypes, messageHandler));
+            var key = new MethodDescription(d);
+            var hash = RegistrationHasher.Calculate(key);
+            _handlers = _handlers.AddOrUpdate(hash, key, d);
         }
         finally
         {
@@ -553,23 +40,17 @@ public sealed class MediatorThreadSafe
     }
 
     /// <summary>
-    /// Register a new handler by using a type-based key.
-    /// All calls to handle methods with arguments of the type matching this key will be routed to the configured delegate.
-    /// Delegates with up to 3 arguments are supported.
+    /// Unregister a method from the handler manifest.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void RegisterHandler(Type messageType, Delegate messageHandler)
+    /// <param name="d">The method to unregister.</param>
+    public void UnregisterHandlerByRef(Delegate d)
     {
-        var argTypes = new[] { messageType };
-        if (ExistsHandler(HandlerArity.Of1, argTypes))
-            throw new InvalidOperationException("Handler for specified message type(s) already registered.");
-
         try
         {
             Monitor.Enter(_lock);
-            _handlers.Add(new HandlerRegistration(HandlerArity.Of1, argTypes, messageHandler));
+            var key = new MethodDescription(d);
+            var hash = RegistrationHasher.Calculate(key);
+            _handlers = _handlers.Remove(hash, key);
         }
         finally
         {
@@ -578,23 +59,17 @@ public sealed class MediatorThreadSafe
     }
 
     /// <summary>
-    /// Register a new handler by using a type-based key.
-    /// All calls to handle methods with arguments of the type matching this key will be routed to the configured delegate.
-    /// Delegates with up to 3 arguments are supported.
+    /// Replace a registered method with another method.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void RegisterHandler(Type messageType, Type messageType2, Delegate messageHandler)
+    /// <param name="old">Reference of the old method.</param>
+    /// <param name="new">Reference of the new method.</param>
+    public void ReplaceHandler(Delegate old, Delegate @new)
     {
-        var argTypes = new[] { messageType, messageType2 };
-        if (ExistsHandler(HandlerArity.Of2, argTypes))
-            throw new InvalidOperationException("Handler for specified message types already registered.");
-
         try
         {
             Monitor.Enter(_lock);
-            _handlers.Add(new HandlerRegistration(HandlerArity.Of2, argTypes, messageHandler));
+            UnregisterHandlerByRef(old);
+            RegisterHandler(@new);
         }
         finally
         {
@@ -603,249 +78,676 @@ public sealed class MediatorThreadSafe
     }
 
     /// <summary>
-    /// Register a new handler by using a type-based key.
-    /// All calls to handle methods with arguments of the type matching this key will be routed to the configured delegate.
-    /// Delegates with up to 3 arguments are supported.
+    /// Clear the handler manifest.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void RegisterHandler(Type messageType, Type messageType2, Type messageType3, Delegate messageHandler)
-    {
-        var argTypes = new[] { messageType, messageType2, messageType3 };
-        if (ExistsHandler(HandlerArity.Of3, argTypes))
-            throw new InvalidOperationException("Handler for specified message types already registered.");
+    public void Clear() => _handlers = ImHashMap<MethodDescription, Delegate>.Empty;
 
-        try
-        {
-            Monitor.Enter(_lock);
-            _handlers.Add(new HandlerRegistration(HandlerArity.Of3, argTypes, messageHandler));
-        }
-        finally
-        {
-            if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-        }
-    }
-
-    private void ReplaceHandler(HandlerArity arity, Delegate newHandler, params Type[] newHandlerArgs)
+    #region handle
+    /// <summary>
+    /// Resolves an action delegate and invokes it with the given input.
+    /// </summary>
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A>(A input)
     {
-        if (ExistsHandler(arity, newHandlerArgs))
-        {
-            this[arity, newHandlerArgs] = new HandlerRegistration(arity, newHandlerArgs, newHandler);
-        }
-        else throw new InvalidOperationException("No handler for specified message type(s) was registered to be replaced.");
+        ResolveActionHandler<A>().Invoke(input);
     }
 
     /// <summary>
-    /// Replace the delegate under an existing registration.
+    /// Resolves an action delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="currentHandler"></param>
-    /// <param name="messageHandler"></param>
-    public void ReplaceHandler(Delegate currentHandler, Delegate messageHandler)
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A, B>(A input, B input2)
     {
-        var newArgTypes = currentHandler.GetArgTypes();
-        ReplaceHandler((HandlerArity)newArgTypes.Length, messageHandler, newArgTypes);
+        ResolveActionHandler<A, B>().Invoke(input, input2);
     }
 
     /// <summary>
-    /// Replace the delegate under an existing registration.
+    /// Resolves an action delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void ReplaceHandler(Type messageType, Delegate messageHandler)
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A, B, C>(A input, B input2, C input3)
     {
-        ReplaceHandler(HandlerArity.Of1, messageHandler, messageType);
+        ResolveActionHandler<A, B, C>().Invoke(input, input2, input3);
     }
 
     /// <summary>
-    /// Replace the delegate under an existing registration.
+    /// Resolves an action delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageType2"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void ReplaceHandler(Type messageType, Type messageType2, Delegate messageHandler)
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A, B, C, D>(A input, B input2, C input3, D input4)
     {
-        ReplaceHandler(HandlerArity.Of2, messageHandler, messageType, messageType2);
+        ResolveActionHandler<A, B, C, D>().Invoke(input, input2, input3, input4);
     }
 
     /// <summary>
-    /// Replace the delegate under an existing registration.
+    /// Resolves an action delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageType2"></param>
-    /// <param name="messageType3"></param>
-    /// <param name="messageHandler"></param>
-    /// <exception cref="InvalidOperationException"></exception>
-    public void ReplaceHandler(Type messageType, Type messageType2, Type messageType3, Delegate messageHandler)
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A, B, C, D, E>(A input, B input2, C input3, D input4, E input5)
     {
-        ReplaceHandler(HandlerArity.Of3, messageHandler, messageType, messageType2, messageType3);
+        ResolveActionHandler<A, B, C, D, E>().Invoke(input, input2, input3, input4, input5);
     }
 
     /// <summary>
-    /// Remove a handler delegate from the manifest.
+    /// Resolves an action delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <returns></returns>
-    public bool UnregisterHandler(Type messageType)
+    /// <param name="input"></param>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler for given input is found.</exception>
+    public void Handle<A, B, C, D, E, F>(A input, B input2, C input3, D input4, E input5, F input6)
     {
-        if (Monitor.TryEnter(_lock, 200))
-        {
-            try
-            {
-                var candidate = _handlers
-                    .Where(r => r.ArgTypes.Length == 1
-                                && r.ArgTypes[0] == messageType)
-                    .SingleOrDefault();
-
-                if (candidate != null) return _handlers.Remove(candidate);
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-        return false;
+        ResolveActionHandler<A, B, C, D, E, F>().Invoke(input, input2, input3, input4, input5, input6);
     }
 
     /// <summary>
-    /// Remove a handler delegate from the manifest.
+    /// Resolves a function delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageType2"></param>
-    /// <returns></returns>
-    /// <exception cref="InvalidOperationException"></exception>
-    public bool UnregisterHandler(Type messageType, Type messageType2)
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRe when no handler matching the input and return types is found.</exception>
+    public R Handle<A, R>(A input)
     {
-        if (Monitor.TryEnter(_lock, 200))
-        {
-            try
-            {
-                var candidate = _handlers
-                    .Where(r => r.ArgTypes.Length == 2
-                                && r.ArgTypes[0] == messageType
-                                && r.ArgTypes[1] == messageType2)
-                    .SingleOrDefault();
-
-                if (candidate != null) return _handlers.Remove(candidate);
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-        return false;
+        return ResolveFunctionHandler<A, R>().Invoke(input);
     }
 
     /// <summary>
-    /// Remove a handler delegate from the manifest.
+    /// Resolves a function delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageType"></param>
-    /// <param name="messageType2"></param>
-    /// <param name="messageType3"></param>
-    /// <returns></returns>
-    /// <exception cref="InvalidOperationException"></exception>
-    public bool UnregisterHandler(Type messageType, Type messageType2, Type messageType3)
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRe when no handler matching the input and return types is found.</exception>
+    public R Handle<A, B, R>(A input, B input2)
     {
-        if (Monitor.TryEnter(_lock, 200))
-        {
-            try
-            {
-                var candidate = _handlers
-                    .Where(r => r.ArgTypes.Length == 3
-                                && r.ArgTypes[0] == messageType
-                                && r.ArgTypes[1] == messageType2
-                                && r.ArgTypes[2] == messageType3)
-                    .SingleOrDefault();
-
-                if (candidate != null) return _handlers.Remove(candidate);
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-        return false;
+        return ResolveFunctionHandler<A, B, R>().Invoke(input, input2);
     }
 
     /// <summary>
-    /// Remove a handler delegate from the manifest.
+    /// Resolves a function delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="handlerRef"></param>
-    /// <returns></returns>
-    /// <exception cref="KeyNotFoundException"></exception>
-    public bool UnregisterHandlerByRef(Delegate handlerRef)
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRe when no handler matching the input and return types is found.</exception>
+    public R Handle<A, B, C, R>(A input, B input2, C input3)
     {
-        if (Monitor.TryEnter(_lock, 200))
-        {
-            try
-            {
-                var candidate = _handlers.FirstOrDefault(r => ReferenceEquals(r.Handler, handlerRef));
-                if (candidate == null)
-                    throw new KeyNotFoundException("Such handler is unknown to this mediator instance.");
-                return _handlers.Remove(candidate);
-            }
-            finally
-            {
-                if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-            }
-        }
-        return false;
+        return ResolveFunctionHandler<A, B, C, R>().Invoke(input, input2, input3);
     }
 
     /// <summary>
-    /// Remove a handler registration and all other registrations whose key's types derive from the passed key.
+    /// Resolves a function delegate and invokes it with the given input.
     /// </summary>
-    /// <param name="messageBaseType"></param>
-    //public void UnregisterHandlerAndChildren(Type messageBaseType)
-    //{
-
-    //    if (Monitor.TryEnter(_lock, 200))
-    //    {
-    //        try
-    //        {
-    //            //_handlers.Keys
-    //            //    .Where(k => k == messageBaseType || k.DerivesFrom(messageBaseType))
-    //            //    .ToList().ForEach(k => _handlers.Remove(k));
-    //        }
-    //        finally
-    //        {
-    //            if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-    //        }
-    //    }
-    //}
-
-    /// <summary>
-    /// Removes all registrations.
-    /// </summary>
-    public void Clear()
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRe when no handler matching the input and return types is found.</exception>
+    public R Handle<A, B, C, D, R>(A input, B input2, C input3, D input4)
     {
-        try
-        {
-            Monitor.Enter(_lock);
-            _handlers.Clear();
-        }
-        finally
-        {
-            if (Monitor.IsEntered(_lock)) Monitor.Exit(_lock);
-        }
+        return ResolveFunctionHandler<A, B, C, D, R>().Invoke(input, input2, input3, input4);
     }
 
     /// <summary>
-    /// Formats a list of registered handlers line by line. Crossplatform.
+    /// Resolves a function delegate and invokes it with the given input.
     /// </summary>
-    /// <returns></returns>
-    public override string ToString()
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRe when no handler matching the input and return types is found.</exception>
+    public R Handle<A, B, C, D, E, R>(A input, B input2, C input3, D input4, E input5)
     {
-        var med = "";
-        var messageTypes = "";
-        var copy = _handlers.ToArray();
-        for (int v = 0; v < copy.Length; v++)
-        {
-            messageTypes = "(" + copy[v].ArgTypes.Aggregate("", (a, c) => a + ", " + c).TrimStart(',', ' ') + ")";
-            med = $"{med}{Environment.NewLine}{messageTypes} => {copy[v].Handler.Method.Name}";
-        }
-        return med.Trim();
+        return ResolveFunctionHandler<A, B, C, D, E, R>().Invoke(input, input2, input3, input4, input5);
     }
+
+    /// <summary>
+    /// Resolves a function delegate and invokes it with the given input.
+    /// </summary>
+    /// <param name="input"></param>
+    /// <returns>The result of the found handler.</returns>
+    /// <exception cref="NullReferenceException">Throws NRE when no handler matching the input and return types is found.</exception>
+    public R Handle<A, B, C, D, E, F, R>(A input, B input2, C input3, D input4, E input5, F input6)
+    {
+        return ResolveFunctionHandler<A, B, C, D, E, F, R>().Invoke(input, input2, input3, input4, input5, input6);
+    }
+    #endregion
+
+    #region start handle
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandler<A>(A input)
+    {
+        return Task.Run(() => ResolveActionHandler<A>().Invoke(input));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandler<A, B>(A input, B input2)
+    {
+        return Task.Run(() => ResolveActionHandler<A, B>().Invoke(input, input2));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandler<A, B, C>(A input, B input2, C input3)
+    {
+        return Task.Run(() => ResolveActionHandler<A, B, C>().Invoke(input, input2, input3));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandler<A, B, C, D>(A input, B input2, C input3, D input4)
+    {
+        return Task.Run(() => ResolveActionHandler<A, B, C, D>().Invoke(input, input2, input3, input4));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandlerr<A, B, C, D, E>(A input, B input2, C input3, D input4, E input5)
+    {
+        return Task.Run(() => ResolveActionHandler<A, B, C, D, E>().Invoke(input, input2, input3, input4, input5));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it on the configured task pool.
+    /// </summary>
+    /// <returns>A references to the Task representing the work.</returns>
+    public Task StartHandler<A, B, C, D, E, F>(A input, B input2, C input3, D input4, E input5, F input6)
+    {
+        return Task.Run(() => ResolveActionHandler<A, B, C, D, E, F>().Invoke(input, input2, input3, input4, input5, input6));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, R>(A input)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, R>().Invoke(input));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, B, R>(A input, B input2)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, B, R>().Invoke(input, input2));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, B, C, R>(A input, B input2, C input3)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, B, C, R>().Invoke(input, input2, input3));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, B, C, D, R>(A input, B input2, C input3, D input4)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, B, C, D, R>().Invoke(input, input2, input3, input4));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, B, C, D, E, R>(A input, B input2, C input3, D input4, E input5)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, B, C, D, E, R>().Invoke(input, input2, input3, input4, input5));
+    }
+
+    /// <summary>
+    /// Finds a function delegate and invokes it on a configured task pool.
+    /// </summary>
+    /// <returns>A reference to the Task[<typeparamref name="R"/>] representing the work.</returns>
+    public Task<R> StartHandler<A, B, C, D, E, F, R>(A input, B input2, C input3, D input4, E input5, F input6)
+    {
+        return Task.Run(() => ResolveFunctionHandler<A, B, C, D, E, F, R>().Invoke(input, input2, input3, input4, input5, input6));
+    }
+    #endregion
+
+    #region handle async
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A>(A input)
+    {
+        await Task.Run(async () => ResolveActionHandler<A>().Invoke(input));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A, B>(A input, B input2)
+    {
+        await Task.Run(async () => ResolveActionHandler<A, B>().Invoke(input, input2));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A, B, C>(A input, B input2, C input3)
+    {
+        await Task.Run(async () => ResolveActionHandler<A, B, C>().Invoke(input, input2, input3));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A, B, C, D>(A input, B input2, C input3, D input4)
+    {
+        await Task.Run(async () => ResolveActionHandler<A, B, C, D>().Invoke(input, input2, input3, input4));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A, B, C, D, E>(A input, B input2, C input3, D input4, E input5)
+    {
+        await Task.Run(async () => ResolveActionHandler<A, B, C, D, E>().Invoke(input, input2, input3, input4, input5));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task HandleAsync<A, B, C, D, E, F>(A input, B input2, C input3, D input4, E input5, F input6)
+    {
+        await Task.Run(async () => ResolveActionHandler<A, B, C, D, E, F>().Invoke(input, input2, input3, input4, input5, input6));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, R>(A input)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, R>().Invoke(input));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, B, R>(A input, B input2)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, B, R>().Invoke(input, input2));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, B, C, R>(A input, B input2, C input3)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, B, C, R>().Invoke(input, input2, input3));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, B, C, D, R>(A input, B input2, C input3, D input4)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, B, C, D, R>().Invoke(input, input2, input3, input4));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, B, C, D, E, R>(A input, B input2, C input3, D input4, E input5)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, B, C, D, E, R>().Invoke(input, input2, input3, input4, input5));
+    }
+
+    /// <summary>
+    /// Finds an action delegate and invokes it asynchronously.
+    /// </summary>
+    public async Task<R> HandleAsync<A, B, C, D, E, F, R>(A input, B input2, C input3, D input4, E input5, F input6)
+    {
+        return await Task.Run(async () => ResolveFunctionHandler<A, B, C, D, E, F, R>().Invoke(input, input2, input3, input4, input5, input6));
+    }
+    #endregion
+
+    #region resolve action handler (untyped)
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType)
+    {
+        var key = MethodDescription.ActOfParams(paramType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType, Type paramType2)
+    {
+        var key = MethodDescription.ActOfParams(paramType, paramType2);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType, Type paramType2, Type paramType3)
+    {
+        var key = MethodDescription.ActOfParams(paramType, paramType2, paramType3);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType, Type paramType2, Type paramType3, Type paramType4)
+    {
+        var key = MethodDescription.ActOfParams(paramType, paramType2, paramType3, paramType4);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType, Type paramType2, Type paramType3, Type paramType4, Type paramType5)
+    {
+        var key = MethodDescription.ActOfParams(paramType, paramType2, paramType3, paramType4, paramType5);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose arguments match the passed param types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveActionHandler(Type paramType, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type paramType6)
+    {
+        var key = MethodDescription.ActOfParams(paramType, paramType2, paramType3, paramType4, paramType5, paramType6);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+    #endregion
+
+    #region resolve action handler
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A>? ResolveActionHandler<A>()
+    {
+        var key = MethodDescription.ActOfSig<A>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A, B>? ResolveActionHandler<A, B>()
+    {
+        var key = MethodDescription.ActOfSig<A, B>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A, B>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A, B, C>? ResolveActionHandler<A, B, C>()
+    {
+        var key = MethodDescription.ActOfSig<A, B, C>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A, B, C>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A, B, C, D>? ResolveActionHandler<A, B, C, D>()
+    {
+        var key = MethodDescription.ActOfSig<A, B, C, D>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A, B, C, D>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A, B, C, D, E>? ResolveActionHandler<A, B, C, D, E>()
+    {
+        var key = MethodDescription.ActOfSig<A, B, C, D, E>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A, B, C, D, E>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered action delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Action<A, B, C, D, E, F>? ResolveActionHandler<A, B, C, D, E, F>()
+    {
+        var key = MethodDescription.ActOfSig<A, B, C, D, E, F>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Action<A, B, C, D, E, F>)entry.Value;
+    }
+    #endregion
+
+    #region resolve function handler (untyped)
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type paramType2, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, paramType2, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type paramType2, Type paramType3, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, paramType2, paramType3, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, paramType2, paramType3, paramType4, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, paramType2, paramType3, paramType4, paramType5, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose arguments match the passed param and return types.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Delegate? ResolveFunctionHandler(Type paramType1, Type paramType2, Type paramType3, Type paramType4, Type paramType5, Type paramType6, Type returnType)
+    {
+        var key = MethodDescription.FuncOfParams(paramType1, paramType2, paramType3, paramType4, paramType5, paramType6, returnType);
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : entry.Value;
+    }
+    #endregion
+
+    #region resolve function handler
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, R>? ResolveFunctionHandler<A, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, R>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, B, R>? ResolveFunctionHandler<A, B, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, B, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, B, R>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, B, C, R>? ResolveFunctionHandler<A, B, C, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, B, C, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, B, C, R>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, B, C, D, R>? ResolveFunctionHandler<A, B, C, D, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, B, C, D, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, B, C, D, R>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, B, C, D, E, R>? ResolveFunctionHandler<A, B, C, D, E, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, B, C, D, E, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, B, C, D, E, R>)entry.Value;
+    }
+
+    /// <summary>
+    /// Finds a registered function delegate whose signature matches the passed typeparams.
+    /// </summary>
+    /// <returns>A reference to the registered handler or null.</returns>
+    public Func<A, B, C, D, E, F, R>? ResolveFunctionHandler<A, B, C, D, E, F, R>()
+    {
+        var key = MethodDescription.FuncOfSig<A, B, C, D, E, F, R>();
+        var hash = RegistrationHasher.Calculate(key);
+        var entry = _handlers.GetEntryOrDefault(hash, key);
+
+        return entry == null ? null : (Func<A, B, C, D, E, F, R>)entry.Value;
+    }
+    #endregion
 }
